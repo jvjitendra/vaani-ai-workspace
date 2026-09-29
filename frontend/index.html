@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vaani — Your AI Workspace</title><meta name="theme-color" content="#0e0a10">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="scene" class="scene model-ganesha">
+  <div class="nebula nebula-a"></div><div class="nebula nebula-b"></div>
+  <div class="stars stars-a"></div><div class="stars stars-b"></div><div class="stars stars-c"></div>
+  <div class="star-field" id="starField"></div>
+  <div class="orbit orbit-a"></div><div class="orbit orbit-b"></div>
+  <div class="planet planet-a"></div><div class="planet planet-b"></div>
+
+  <header class="topbar">
+    <button class="brand" id="brandBtn" aria-label="New Vaani chat">
+      <span class="brand-mark"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,.18)"/><path d="M11 10L23.7 36L37 10" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="37" cy="10" r="2.4" fill="#fff"/></svg></span>
+      <span class="brand-copy"><strong>Vaani</strong><small>Your AI Workspace</small></span>
+    </button>
+    <div class="top-actions">
+      <div class="live-pill"><i></i><div><b id="liveTime">--:--:--</b><small id="liveDate">--</small></div><span id="liveWeather">Live</span></div>
+      <button class="ghost-btn" id="modeBtn">✦ <span id="modeText">General</span>⌄</button>
+      <div class="model-wrap"><button class="model-btn" id="modelBtn"><span class="model-dot"></span><span><b id="modelName">Ganesha</b><small id="modelTag">Learn & Explore</small></span><em>⌄</em></button><div class="popover model-menu" id="modelMenu"></div></div>
+      <button class="ghost-btn" id="historyBtn">History</button><button class="ghost-btn" id="newChatBtn">New chat</button>
+      <button class="ghost-btn" id="toolsBtn">✦ Tools</button><button class="ghost-btn" id="devBtn">⌁ Know the Developer</button>
+      <button class="icon-btn" id="commandBtn" title="Command palette">⌘K</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="hero" id="hero">
+      <div class="hero-logo">
+        <div class="hero-v-wrap"><div class="hero-v-orbit hero-v-orbit-a"></div><div class="hero-v-orbit hero-v-orbit-b"></div>
+          <svg class="hero-v" viewBox="0 0 180 180"><defs><filter id="heroGlow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><circle cx="90" cy="90" r="67" fill="none" stroke="rgba(255,255,255,.12)"/><circle cx="90" cy="90" r="55" fill="rgba(255,255,255,.018)" stroke="rgba(255,255,255,.18)"/><path d="M49 43L89 132L132 43" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" filter="url(#heroGlow)"/><path d="M62 44L90 105L119 44" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="2.5" stroke-linecap="round"/><circle cx="132" cy="43" r="5" fill="#fff"/><circle cx="49" cy="43" r="3.5" fill="#fff"/></svg>
+        </div><div class="hero-name">V A A N I</div><div class="hero-sub">YOUR AI WORKSPACE</div>
+      </div>
+      <div class="hero-copy"><h1 id="heroTitle">Let’s build something.</h1><p>Ask, learn, create, solve — in one calm workspace.</p></div>
+      <div class="suggestions"><button data-prompt="Plan a 3-day trip to Goa">Plan something</button><button data-prompt="Explain JWT in simple words">Learn something</button><button data-prompt="Help me build a Python REST API">Build something</button><button data-prompt="Write a professional email">Write something</button><button data-prompt="What is the current time in London?">Current time</button><button data-prompt="Research useful current topics to explore">Research</button></div>
+      <div class="composer hero-composer"><button class="attach-btn" id="attachBtn">＋</button><button class="voice-btn" id="voiceBtn" title="Voice input"><span class="mic-icon">●</span></button><input id="promptInput" autocomplete="off" placeholder="What are you working on?"/><button class="send-btn" id="sendBtn">↑</button><input type="file" id="fileInput" hidden multiple accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.java,.cpp,.c,.pdf,.docx,.xlsx,.xls"></div>
+      <div class="creator-signature">JITENDRA VERMA <span>—</span> THE MIND BEHIND VAANI <span class="live-dots" aria-hidden="true">...</span></div><div class="voice-status" id="voiceStatus"></div><div class="disclaimer">Vaani can make mistakes. Verify important information.</div>
+    </section>
+
+    <section class="chat-shell" id="chatShell" aria-hidden="true">
+      <div class="chat-toolbar"><span id="chatContext">General · Ganesha</span><div class="toolbar-right"><span id="latencyBadge" class="latency">Ready</span><button id="focusBtn">Focus</button><button id="exitFocusBtn" class="focus-exit-btn" hidden>Exit Focus</button><button id="stopBtn" disabled>Stop</button></div></div>
+      <div class="chat-scroll" id="chatScroll"><div class="messages" id="messages"></div></div>
+      <div class="composer chat-composer"><button class="attach-btn" id="chatAttachBtn">＋</button><button class="voice-btn" id="chatVoiceBtn"><span class="mic-icon">●</span></button><textarea id="chatInput" rows="1" placeholder="Continue the conversation…"></textarea><button class="send-btn" id="chatSendBtn">↑</button><input type="file" id="chatFileInput" hidden multiple accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.java,.cpp,.c,.pdf,.docx,.xlsx,.xls"></div>
+    </section>
+  </main>
+
+  <aside class="drawer" id="drawer"><div class="drawer-head"><h3 id="drawerTitle">Tools</h3><button class="close-btn" id="drawerClose">×</button></div><div class="drawer-body" id="drawerBody"></div></aside>
+  <div class="command-palette" id="commandPalette"><div class="command-card"><div class="command-head"><strong>VAANI QUICK ACCESS</strong><button class="command-close" id="commandClose" aria-label="Close">×</button></div><div class="command-search"><span>⌘K</span><input id="commandInput" placeholder="Search Vaani…"></div><div id="commandList"></div></div></div>
+  <div class="backdrop" id="backdrop"></div><div class="toast" id="toast"></div><div class="file-chip" id="fileChip"></div>
+</div>
+<script src="./app.js"></script>
+</body></html>
