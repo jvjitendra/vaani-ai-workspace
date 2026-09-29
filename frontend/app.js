@@ -1,4 +1,4 @@
-const API_BASE="http://127.0.0.1:5288";
+const API_BASE="https://vaani-ai-workspace.vercel.app";;
 const state={model:"Ganesha",mode:"General",history:[],controller:null,files:[],chatId:null,focus:false,memory:JSON.parse(localStorage.getItem("vaani_memory")||"[]"),workspaces:JSON.parse(localStorage.getItem("vaani_workspaces")||'["Personal","Projects","Job Search"]'),voice:{recognition:null,listening:false,targetId:"promptInput",baseText:""},models:{
  Ganesha:{tag:"Learn & Explore",id:"openai/gpt-oss-20b",cls:"model-ganesha",accent:"#e7a64f"},
  Arjuna:{tag:"Focus & Precision",id:"qwen/qwen3-next-80b-a3b-instruct",cls:"model-arjuna",accent:"#71b7ff"},
