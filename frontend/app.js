@@ -134,6 +134,7 @@ async function send(text){
   setComposerLocked(true);
   const started=performance.now();
   state.controller=new AbortController();
+  const safetyTimer=setTimeout(()=>{try{state.controller&&state.controller.abort()}catch(_){}},45000);
   let live={client_timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,workspace:state.workspace,memory:state.memory.slice(-12),files:attachedFiles.length?attachedFiles.map(f=>`${f.name}:\n${f.text||""}`).join("\n\n").slice(0,30000):"",images:attachedImages.map(x=>({fileId:x.fileId,name:x.name,data_url:x.data_url||"",mime:x.mime})).slice(0,8),attachments:attachmentPayload.slice(0,8)};
   try{
     const requestBody={message:messageText,history:state.history.slice(0,-1),mode:state.mode,model:state.models[state.model].id,live_context:live};
@@ -151,7 +152,7 @@ async function send(text){
       persistChat(messageText,full);return;
     }
     const reader=r.body.getReader(),dec=new TextDecoder();let buf="",full="";
-    while(true){const {done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.startsWith("data:"))continue;const raw=line.slice(5).trim();if(raw==="[DONE]")continue;let d;try{d=JSON.parse(raw)}catch{continue}if(d.error)throw new Error(d.error);if(d.text){full+=d.text;setAssistant(a,full);chatScroll.scrollTop=chatScroll.scrollHeight}}}
+    streamLoop: while(true){const {done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.startsWith("data:"))continue;const raw=line.slice(5).trim();if(raw==="[DONE]"){try{await reader.cancel()}catch(_){}break streamLoop}let d;try{d=JSON.parse(raw)}catch{continue}if(d.error)throw new Error(d.error);if(d.text){full+=d.text;setAssistant(a,full);chatScroll.scrollTop=chatScroll.scrollHeight}}}
     if(!full.trim())throw new Error("No response returned.");
     stopVisionActivity();pushHistory("assistant",full);state.files=[];state.images=[];renderFileChip();$("latencyBadge").textContent=`${((performance.now()-started)/1000).toFixed(1)}s`;persistChat(messageText,full);
   }catch(e){
@@ -159,6 +160,7 @@ async function send(text){
     if(e.name==="AbortError"){setAssistant(a,`_Response stopped by you._`)}
     else{state.files=attachedFiles;state.images=attachedImages;renderFileChip();setAssistant(a,`**Vaani couldn't complete that request.**\n\n${e.message}`);toast("Request failed — attachment kept for retry.")}
   }finally{
+    clearTimeout(safetyTimer);
     state.controller=null;$("stopBtn").disabled=true;scene.classList.remove("generating");setComposerLocked(false);setTimeout(()=>$("latencyBadge").textContent="Ready",2400);setTimeout(focusComposer,40);
   }
 }
