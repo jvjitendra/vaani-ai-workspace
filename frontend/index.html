@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vaani — Your AI Workspace</title><meta name="theme-color" content="#0e0a10">
-<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./styles.css?v=1">
 </head>
 <body>
-<div id="scene" class="scene model-ganesha">
+<div id="scene" class="scene model-saturn">
   <div class="nebula nebula-a"></div><div class="nebula nebula-b"></div>
   <div class="stars stars-a"></div><div class="stars stars-b"></div><div class="stars stars-c"></div>
   <div class="star-field" id="starField"></div>
   <div class="orbit orbit-a"></div><div class="orbit orbit-b"></div>
-  <div class="planet planet-a"></div><div class="planet planet-b"></div>
+  <div class="planet planet-a" aria-hidden="true"></div><div class="planet planet-b" aria-hidden="true"></div><div class="planet planet-c" aria-hidden="true"></div><div class="planet planet-d" aria-hidden="true"></div>
 
   <header class="topbar">
     <button class="brand" id="brandBtn" aria-label="New Vaani chat">
@@ -20,8 +20,8 @@
     </button>
     <div class="top-actions">
       <div class="live-pill"><i></i><div><b id="liveTime">--:--:--</b><small id="liveDate">--</small></div><span id="liveWeather">Live</span></div>
-      <button class="ghost-btn" id="modeBtn">✦ <span id="modeText">General</span>⌄</button>
-      <div class="model-wrap"><button class="model-btn" id="modelBtn"><span class="model-dot"></span><span><b id="modelName">Ganesha</b><small id="modelTag">Learn & Explore</small></span><em>⌄</em></button><div class="popover model-menu" id="modelMenu"></div></div>
+      <div class="mode-wrap"><button class="ghost-btn" id="modeBtn" aria-haspopup="true" aria-expanded="false">✦ <span id="modeText">General</span><span class="mode-arrow" aria-hidden="true">⌄</span></button><div class="popover mode-menu" id="modeMenu" role="menu"></div></div>
+      <div class="model-wrap"><button class="model-btn" id="modelBtn"><span class="model-dot"></span><span><b id="modelName">Saturn</b><small id="modelTag" aria-hidden="true"></small></span><em>⌄</em></button><button class="model-info-btn" id="modelInfoBtn" title="Model Guide" aria-label="Model Guide">i</button><div class="popover model-menu" id="modelMenu"></div></div>
       <button class="ghost-btn" id="historyBtn">History</button><button class="ghost-btn" id="newChatBtn">New chat</button>
       <button class="ghost-btn" id="toolsBtn">✦ Tools</button><button class="ghost-btn" id="devBtn">⌁ Know the Developer</button>
       <button class="icon-btn" id="commandBtn" title="Command palette">⌘K</button>
@@ -37,20 +37,20 @@
       </div>
       <div class="hero-copy"><h1 id="heroTitle">Let’s build something.</h1><p>Ask, learn, create, solve — in one calm workspace.</p></div>
       <div class="suggestions"><button data-prompt="Plan a 3-day trip to Goa">Plan something</button><button data-prompt="Explain JWT in simple words">Learn something</button><button data-prompt="Help me build a Python REST API">Build something</button><button data-prompt="Write a professional email">Write something</button><button data-prompt="What is the current time in London?">Current time</button><button data-prompt="Research useful current topics to explore">Research</button></div>
-      <div class="composer hero-composer"><button class="attach-btn" id="attachBtn">＋</button><button class="voice-btn" id="voiceBtn" title="Voice input"><span class="mic-icon">●</span></button><input id="promptInput" autocomplete="off" placeholder="What are you working on?"/><button class="send-btn" id="sendBtn">↑</button><input type="file" id="fileInput" hidden multiple accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.java,.cpp,.c,.pdf,.docx,.xlsx,.xls"></div>
+      <div class="composer hero-composer"><div class="composer-attachments" id="heroAttachments" aria-live="polite"></div><div class="composer-row"><button class="attach-btn" id="attachBtn" aria-label="Add photos and files">＋</button><button class="voice-btn" id="voiceBtn" title="Voice input" aria-label="Voice input"><span class="mic-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path><path d="M9 21h6"></path></svg></span></button><input id="promptInput" autocomplete="off" placeholder="What are you working on?"/><button class="send-btn" id="sendBtn" aria-label="Send message">↑</button></div><input type="file" id="fileInput" hidden multiple accept="image/png,image/jpeg,image/webp,image/jpg,.txt,.md,.csv,.tsv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.java,.cpp,.c,.h,.hpp,.cs,.go,.rs,.php,.sql,.xml,.yaml,.yml,.sh,.bat,.ps1,.pdf,.docx,.xlsx,.xlsm,.xls"></div>
       <div class="creator-signature">JITENDRA VERMA <span>—</span> THE MIND BEHIND VAANI <span class="live-dots" aria-hidden="true">...</span></div><div class="voice-status" id="voiceStatus"></div><div class="disclaimer">Vaani can make mistakes. Verify important information.</div>
     </section>
 
     <section class="chat-shell" id="chatShell" aria-hidden="true">
-      <div class="chat-toolbar"><span id="chatContext">General · Ganesha</span><div class="toolbar-right"><span id="latencyBadge" class="latency">Ready</span><button id="focusBtn">Focus</button><button id="exitFocusBtn" class="focus-exit-btn" hidden>Exit Focus</button><button id="stopBtn" disabled>Stop</button></div></div>
+      <div class="chat-toolbar"><span id="chatContext">General · Saturn</span><div class="toolbar-right"><span id="latencyBadge" class="latency">Ready</span><button id="focusBtn" aria-pressed="false">Focus</button><button id="stopBtn" disabled>Stop</button></div></div>
       <div class="chat-scroll" id="chatScroll"><div class="messages" id="messages"></div></div>
-      <div class="composer chat-composer"><button class="attach-btn" id="chatAttachBtn">＋</button><button class="voice-btn" id="chatVoiceBtn"><span class="mic-icon">●</span></button><textarea id="chatInput" rows="1" placeholder="Continue the conversation…"></textarea><button class="send-btn" id="chatSendBtn">↑</button><input type="file" id="chatFileInput" hidden multiple accept=".txt,.md,.csv,.json,.py,.js,.html,.css,.java,.cpp,.c,.pdf,.docx,.xlsx,.xls"></div>
+      <div class="composer chat-composer"><div class="composer-attachments" id="chatAttachments" aria-live="polite"></div><div class="composer-row"><button class="attach-btn" id="chatAttachBtn" aria-label="Add photos and files">＋</button><button class="voice-btn" id="chatVoiceBtn" aria-label="Voice input"><span class="mic-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path><path d="M9 21h6"></path></svg></span></button><textarea id="chatInput" rows="1" placeholder="Continue the conversation…"></textarea><button class="send-btn" id="chatSendBtn" aria-label="Send message">↑</button></div><input type="file" id="chatFileInput" hidden multiple accept="image/png,image/jpeg,image/webp,image/jpg,.txt,.md,.csv,.tsv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.java,.cpp,.c,.h,.hpp,.cs,.go,.rs,.php,.sql,.xml,.yaml,.yml,.sh,.bat,.ps1,.pdf,.docx,.xlsx,.xlsm,.xls"></div>
     </section>
   </main>
 
   <aside class="drawer" id="drawer"><div class="drawer-head"><h3 id="drawerTitle">Tools</h3><button class="close-btn" id="drawerClose">×</button></div><div class="drawer-body" id="drawerBody"></div></aside>
   <div class="command-palette" id="commandPalette"><div class="command-card"><div class="command-head"><strong>VAANI QUICK ACCESS</strong><button class="command-close" id="commandClose" aria-label="Close">×</button></div><div class="command-search"><span>⌘K</span><input id="commandInput" placeholder="Search Vaani…"></div><div id="commandList"></div></div></div>
-  <div class="backdrop" id="backdrop"></div><div class="toast" id="toast"></div><div class="file-chip" id="fileChip"></div>
+  <div class="plus-menu" id="plusMenu" aria-hidden="true"></div><div class="backdrop" id="backdrop"></div><div class="toast" id="toast"></div><div class="file-chip" id="fileChip" aria-hidden="true"></div><div class="image-lightbox" id="imageLightbox" aria-hidden="true"><button class="lightbox-close" id="imageLightboxClose" aria-label="Close image preview">×</button><img id="imageLightboxImg" alt="Expanded attachment preview"><div class="lightbox-name" id="imageLightboxName"></div></div>
 </div>
-<script src="./app.js"></script>
+<script src="./app.js?v=1"></script>
 </body></html>

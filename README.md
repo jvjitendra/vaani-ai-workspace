@@ -1,40 +1,25 @@
-# Vaani V3 — AI Workspace
+# Vaani V1 — Final Consolidated UX Build
 
-V3 is the next product layer over the V2 cosmic interface. It keeps the Vaani visual identity and adds a cleaner workspace UX, command palette, local memory, workspaces, research panel, diagnostics, improved voice UX, faster living galaxy motion, developer identity panel, file context, chat history, model worlds, and responsive polish.
+Vaani V1 is the consolidated AI Workspace build.
 
-## Run
+## Final UX pass
+- Preserves the original cosmic background, stars, planets, orbital rings and nebula.
+- Slightly quicker, restrained star twinkle.
+- Audits small UI typography for readability at 100% desktop zoom without globally oversizing the interface.
+- Enlarges the Vaani header mark by one level.
+- Tightens header spacing and anchors General/Model dropdowns to their triggers.
+- Makes History conversations distinct cards with subtle frost/ivory borders.
+- Makes Vaani Tools readable, gives tool icons a slightly larger footprint and purposeful idle/hover animation.
+- Compacts Create & Attach vertically while preserving icon-to-text horizontal spacing.
+- Keeps the panel safely inside the viewport with internal scrolling.
+- Supports multiple file selection and enforces a maximum of 10 files per attachment batch with a clear message.
+- Shows image thumbnails immediately in the composer and keeps sent-image previews clickable.
+- Clicking a sent/rendered image opens a large in-app preview; Escape or Close exits.
+- Preserves Gemini image vision, image-generation/editing, video, web research, tools, history, developer, voice and Focus Mode flows.
+- Preserves the image-processing activity UI while Gemini is working.
 
-### Backend
-```powershell
-cd "D:\Chandigarh University\Coding\Python\AI Chatbot\backend"
-python app.py
-```
+## Version
+V1
 
-Keep your existing `.env` with `NVIDIA_API_KEY` in the backend folder (or adapt your existing environment setup).
-
-### Frontend
-Open:
-`frontend/index.html`
-
-Or serve the frontend with a local static server.
-
-Backend default: `http://127.0.0.1:5288`
-
-## V3 highlights
-- Living galaxy with faster star motion and model-specific worlds
-- Frost-white Vaani identity and animated signature
-- Voice recognition with English (India) locale
-- Model selector: Ganesha, Arjuna, Krishna, Shiva
-- Local conversation history
-- Local memory and workspaces
-- Web research panel using backend search endpoint
-- File analysis/context for supported files
-- Diagnostics panel for backend/API/voice state
-- Command palette (Ctrl/Cmd + K)
-- Focus mode
-- Streaming responses and latency indicator
-- Developer panel for Jitendra Kumar Verma
-- Responsive mobile reductions and reduced-motion support
-
-## Important
-V3 does not expose the NVIDIA API key in frontend code. Keep secrets in `.env` on the backend.
+## Security
+Do not commit `backend/.env` or provider API keys. Keep secrets in environment variables.
