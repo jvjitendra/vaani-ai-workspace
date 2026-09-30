@@ -22,7 +22,7 @@ const state={model:"Saturn",mode:"General",history:[],controller:null,files:[],i
  Mars:{tag:"GPT-OSS 20B",id:"openai/gpt-oss-20b",cls:"model-mars",accent:"#e6a0a8"}
 }};
 const $=id=>document.getElementById(id), scene=$("scene"),hero=$("hero"),chatShell=$("chatShell"),messages=$("messages"),chatScroll=$("chatScroll"),drawer=$("drawer"),backdrop=$("backdrop"),toastEl=$("toast");
-function toast(m){toastEl.textContent=m;toastEl.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>toastEl.classList.remove("show"),2300)}
+function toast(m,type=""){toastEl.textContent=(type==="warning"?"⚠ ":"")+m;toastEl.classList.toggle("warning",type==="warning");toastEl.classList.add("show");clearTimeout(toast.t);toast.t=setTimeout(()=>toastEl.classList.remove("show"),type==="warning"?4500:2300)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function inlineMd(t){
   let s=esc(t);
@@ -48,7 +48,7 @@ function md(t){
     if(/^```/.test(line.trim())){
       flush();const lang=line.trim().slice(3).trim();const code=[];i++;
       while(i<lines.length&&!/^```/.test(lines[i].trim())){code.push(lines[i]);i++}
-      if(i<lines.length)i++;out.push(`<pre><code class="language-${esc(lang)}">${esc(code.join('\n'))}</code></pre>`);continue;
+      if(i<lines.length)i++;out.push(`<pre data-lang="${esc(lang||'text')}"><code class="language-${esc(lang)}">${esc(code.join('\n'))}</code></pre>`);continue;
     }
     if(/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)){
       flush();out.push('<hr class="md-divider">');i++;continue;
@@ -84,7 +84,9 @@ function pulseWorld(){scene.classList.remove("world-pulse");requestAnimationFram
 function newChat(){scene.classList.remove("chat-active");state.history=[];state.chatId=crypto.randomUUID?.()||Date.now();messages.innerHTML="";hero.classList.remove("hidden");chatShell.classList.remove("open");chatShell.setAttribute("aria-hidden","true");closeDrawer()}
 function openChat(){scene.classList.add("chat-active");hero.classList.add("hidden");chatShell.classList.add("open");chatShell.setAttribute("aria-hidden","false");setTimeout(()=>$("chatInput").focus(),120)}
 function addMessage(role,text="",streaming=false,attachments=[]){const el=document.createElement("article");el.className=`message ${role}`;const media=(role==="user"&&attachments.length)?`<div class="message-attachments">${attachments.map(x=>{const src=x.data_url||x.preview_url||"";return src?`<div class="message-attachment-image"><img src="${src}" alt="${esc(x.name||"Attachment")}" loading="lazy"><span>${esc(x.name||"Attachment")}</span></div>`:`<span>${esc(x.name||"File")}</span>`}).join("")}</div>`:"";el.innerHTML=`<div class="message-head"><span>${role==="user"?"You":"Vaani"}</span><small>${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div><div class="message-body">${streaming?"<span class='cursor'></span>":md(text)}${media}</div>${role==="assistant"?`<div class="message-actions"><button data-act="copy">Copy</button><button data-act="improve">Improve</button><button data-act="save">Save</button><button data-act="continue">Continue from here</button></div>`:""}`;messages.appendChild(el);chatScroll.scrollTop=chatScroll.scrollHeight;return el}
-function setAssistant(el,text){el.querySelector(".message-body").innerHTML=md(text);el.querySelectorAll("pre").forEach(pre=>{const b=document.createElement("button");b.className="code-copy";b.textContent="Copy code";b.onclick=()=>navigator.clipboard.writeText(pre.innerText);pre.appendChild(b)})}
+function setAssistant(el,text,streaming=false){const body=el.querySelector(".message-body");body.classList.toggle("streaming",!!streaming);body.innerHTML=md(text)+(streaming?'<span class="stream-caret" aria-hidden="true"></span>':'');el.querySelectorAll("pre").forEach(pre=>{if(pre.querySelector(".code-copy"))return;const b=document.createElement("button");b.className="code-copy";b.textContent="Copy code";b.onclick=()=>navigator.clipboard.writeText(pre.querySelector("code")?.innerText??pre.innerText);pre.appendChild(b)})}
+let stickToBottom=true;
+chatScroll?.addEventListener("scroll",()=>{stickToBottom=(chatScroll.scrollHeight-chatScroll.scrollTop-chatScroll.clientHeight)<90});
 function pushHistory(role,content){state.history.push({role,content});if(state.history.length>24)state.history.shift()}
 function setComposerLocked(locked){
   document.querySelectorAll("#promptInput,#chatInput,#sendBtn,#chatSendBtn,#attachBtn,#chatAttachBtn,#voiceBtn,#chatVoiceBtn").forEach(el=>{if(el)el.disabled=locked});
@@ -127,6 +129,7 @@ async function send(text){
   const sentAttachments=[...attachedImages, ...attachedFiles.filter(f=>(f.data_url||f.preview_url) && !attachedImages.some(x=>x.fileId===f.id))];
   addMessage("user",messageText,false,sentAttachments);
   const a=addMessage("assistant","",true);
+  stickToBottom=true;
   const stopVisionActivity=(hasImage||hasFile)?startVisionActivity(a,hasImage?"image":"file"):()=>{};
   $("stopBtn").disabled=false;
   $("latencyBadge").textContent=hasImage||hasFile?"Reading…":"Crafting…";
@@ -152,13 +155,17 @@ async function send(text){
       persistChat(messageText,full);return;
     }
     const reader=r.body.getReader(),dec=new TextDecoder();let buf="",full="";
-    streamLoop: while(true){const {done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.startsWith("data:"))continue;const raw=line.slice(5).trim();if(raw==="[DONE]"){try{await reader.cancel()}catch(_){}break streamLoop}let d;try{d=JSON.parse(raw)}catch{continue}if(d.error)throw new Error(d.error);if(d.text){full+=d.text;setAssistant(a,full);chatScroll.scrollTop=chatScroll.scrollHeight}}}
+    let rafPending=false;
+    const flushRender=()=>{rafPending=false;setAssistant(a,full,true);if(stickToBottom)chatScroll.scrollTop=chatScroll.scrollHeight};
+    const scheduleRender=()=>{if(rafPending)return;rafPending=true;requestAnimationFrame(flushRender)};
+    streamLoop: while(true){const {done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.startsWith("data:"))continue;const raw=line.slice(5).trim();if(raw==="[DONE]"){try{await reader.cancel()}catch(_){}break streamLoop}let d;try{d=JSON.parse(raw)}catch{continue}if(d.error)throw new Error(d.error);if(d.text){full+=d.text;scheduleRender()}}}
     if(!full.trim())throw new Error("No response returned.");
+    setAssistant(a,full,false);
     stopVisionActivity();pushHistory("assistant",full);state.files=[];state.images=[];renderFileChip();$("latencyBadge").textContent=`${((performance.now()-started)/1000).toFixed(1)}s`;persistChat(messageText,full);
   }catch(e){
     stopVisionActivity();
     if(e.name==="AbortError"){setAssistant(a,`_Response stopped by you._`)}
-    else{state.files=attachedFiles;state.images=attachedImages;renderFileChip();setAssistant(a,`**Vaani couldn't complete that request.**\n\n${e.message}`);toast("Request failed — attachment kept for retry.")}
+    else{state.files=attachedFiles;state.images=attachedImages;renderFileChip();setAssistant(a,`**Vaani couldn't complete that request.**\n\n${e.message}`);toast("Request failed — attachment kept for retry.","warning")}
   }finally{
     clearTimeout(safetyTimer);
     state.controller=null;$("stopBtn").disabled=true;scene.classList.remove("generating");setComposerLocked(false);setTimeout(()=>$("latencyBadge").textContent="Ready",2400);setTimeout(focusComposer,40);
@@ -203,7 +210,7 @@ function renderFileChip(){
 }
 async function attach(files){
   const incoming=[...files].filter(Boolean);
-  if(incoming.length>10){toast('You can upload a maximum of 10 files at a time.');return;}
+  if(incoming.length>10){toast('You can upload a maximum of 10 files at a time.','warning');return;}
   if(!incoming.length)return;
   for(const f of incoming){
     const id=crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`;
@@ -300,6 +307,11 @@ function bind(){state.workspace=localStorage.getItem("vaani_active_workspace")||
  ["attachBtn","chatAttachBtn"].forEach(id=>$(id).onclick=e=>{e.stopPropagation();openPlusMenu(id)});window.addEventListener("resize",()=>positionPlusMenu($(plusAnchorId)));window.addEventListener("scroll",()=>positionPlusMenu($(plusAnchorId)),true);$("fileInput").onchange=e=>{attach(e.target.files);e.target.value=""};$("chatFileInput").onchange=e=>{attach(e.target.files);e.target.value=""};["heroAttachments","chatAttachments"].forEach(id=>$(id)?.closest(".composer")?.addEventListener("dragover",e=>{e.preventDefault();e.currentTarget.classList.add("drag-over")}));["heroAttachments","chatAttachments"].forEach(id=>$(id)?.closest(".composer")?.addEventListener("dragleave",e=>{if(!e.currentTarget.contains(e.relatedTarget))e.currentTarget.classList.remove("drag-over")}));["heroAttachments","chatAttachments"].forEach(id=>$(id)?.closest(".composer")?.addEventListener("drop",e=>{e.preventDefault();e.currentTarget.classList.remove("drag-over");if(e.dataTransfer?.files?.length)attach(e.dataTransfer.files)}));["promptInput","chatInput"].forEach(id=>$(id)?.addEventListener("paste",e=>{const imgs=[...(e.clipboardData?.items||[])].map(x=>x.kind==="file"?x.getAsFile():null).filter(f=>f&&/^image\//.test(f.type));if(imgs.length){e.preventDefault();attach(imgs)}}));$("voiceBtn").onclick=()=>startVoice("promptInput");$("chatVoiceBtn").onclick=()=>startVoice("chatInput");$("sendBtn").onclick=()=>{const v=$("promptInput").value;$("promptInput").value="";send(v)};$("chatSendBtn").onclick=()=>{const v=$("chatInput").value;$("chatInput").value="";send(v)};$("promptInput").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();$("sendBtn").click()}};$("chatInput").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("chatSendBtn").click()}};document.querySelectorAll(".suggestions button").forEach(b=>b.onclick=()=>{$("promptInput").value=b.dataset.prompt;$("promptInput").focus()});document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();showCommand()}if(e.key==="Escape"){closeImageLightbox();closePlus();$("commandPalette").classList.remove("open");closeDrawer();$("modelMenu").classList.remove("open");$("modeMenu")?.classList.remove("open");$("modeBtn")?.setAttribute("aria-expanded","false")}});}
 bind();
 setTimeout(focusComposer,250);
+setInterval(()=>{
+  if(state.controller)return;
+  const stillLocked=document.querySelector(".composer.locked")||$("sendBtn")?.disabled||$("chatSendBtn")?.disabled;
+  if(stillLocked){setComposerLocked(false);$("stopBtn").disabled=true;scene.classList.remove("generating")}
+},3000);
 document.addEventListener("keydown",e=>{
   const active=document.activeElement;
   const typingTarget=active&&(active.tagName==="INPUT"||active.tagName==="TEXTAREA"||active.tagName==="SELECT"||active.isContentEditable);
