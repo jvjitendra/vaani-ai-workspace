@@ -8,14 +8,23 @@ from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
+import sys
+from pathlib import Path
 
 BASE_DIR=Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+import brain_db
+import tools
+
 APP_VERSION='v1'
 load_dotenv(BASE_DIR/'.env')
 GROQ_API_KEY=os.getenv('GROQ_API_KEY','').strip()
 GEMINI_API_KEY=os.getenv('GEMINI_API_KEY','').strip()
 GROQ_BASE='https://api.groq.com/openai/v1'
-GROQ_MODEL=os.getenv('GROQ_MODEL','openai/gpt-oss-20b')
+GROQ_MODEL=os.getenv('GROQ_MODEL','qwen/qwen3.8-27b')
+GROQ_FALLBACK_MODELS=['qwen/qwen3.8-27b','openai/gpt-oss-120b','openai/gpt-oss-20b']
 GEMINI_MODEL=os.getenv('GEMINI_MODEL','gemini-3.8-flash')
 GEMINI_VISION_FALLBACKS=[x.strip() for x in os.getenv('GEMINI_VISION_FALLBACKS','gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash').split(',') if x.strip()]
 if GEMINI_MODEL not in GEMINI_VISION_FALLBACKS: GEMINI_VISION_FALLBACKS.insert(0,GEMINI_MODEL)
@@ -26,7 +35,7 @@ FRONTEND_ORIGIN=os.getenv('FRONTEND_ORIGIN','https://vaani-ai-workspace-frontend
 app=Flask(__name__)
 app.config['MAX_CONTENT_LENGTH']=20*1024*1024
 allowed=[x.strip() for x in FRONTEND_ORIGIN.split(',') if x.strip()]
-allowed += ['http://127.0.0.1:5500','http://localhost:5500','http://127.0.0.1:5288','http://localhost:5288']
+allowed += ['http://127.0.0.1:5500','http://localhost:5500','http://127.0.0.1:5288','http://localhost:5288','http://127.0.0.1:5050','http://localhost:5050','http://127.0.0.1:8080','http://localhost:8080']
 CORS(app, origins=allowed or '*')
 groq_client=OpenAI(api_key=GROQ_API_KEY,base_url=GROQ_BASE,timeout=90.0) if GROQ_API_KEY else None
 try:
@@ -40,8 +49,18 @@ MODE_PROMPTS={
  'General':'Answer naturally and helpfully. Handle general knowledge, practical questions, explanations and everyday tasks.',
  'Coding Assistant':'Act as a careful software engineer. Explain architecture, code, debugging, APIs, databases and testing clearly. Prefer runnable examples.',
  'Interview Prep':'Act as an interview coach. Give accurate answers, examples, follow-up questions and practical interview phrasing.',
- 'Explain Simply':'Explain difficult topics in simple language with analogies and step-by-step structure. Avoid unnecessary jargon.'}
-BASE_PROMPT='''You are Vaani, an AI workspace assistant.\nBe useful, direct, honest and readable. Use the user language naturally, including Hinglish when appropriate.\nNever invent current facts such as weather, time, prices or scores. If live context is supplied, use it and identify it as live context.\nFor uploaded files, use only the supplied extracted content and visual inputs. If the file does not contain enough information, say so.\nDo not claim to have generated, edited, executed, searched or verified something unless the system actually supplied the result.\nPrefer structured answers with short paragraphs, bullets and code blocks when useful.'''
+ 'Explain Simply':'Explain difficult topics in simple language with analogies and step-by-step structure. Avoid unnecessary jargon.',
+ 'Web Research':'Act as an autonomous web researcher. Ground your claims in the verified multi-source research evidence and cite sources with clickable links.'}
+BASE_PROMPT='''You are Vaani, an intelligent and bespoke AI workspace assistant.
+Be useful, direct, elegant, honest and readable. Use the user's language naturally, including Hinglish when appropriate.
+Never refer to yourself as JARVIS or copy any fictional AI assistant. Your identity is strictly Vaani.
+Never invent current facts such as weather, time, prices or scores. If verified ground truth tool evidence is supplied, treat it as ground truth.
+When the user asks for the time or weather of a specific location, always use the verified live data provided for that location. If the requested location is outside India, include its local time and the dynamic time difference from India (IST). When inside India, avoid redundant comparisons.
+For questions requiring external web research, flight prices, travel fares, or live web news where web URLs are provided, ground your statements in the supplied verified search evidence, explicitly state the names of the source websites (e.g. MakeMyTrip, IndiGo, Yatra) in your explanation, cite claims with inline markers [1], [2], and ALWAYS conclude with a clean '### Sources' section containing clean, clickable Markdown links formatted as: [1] [Website Name](URL). Never write just '[1](URL)'.
+STRICT CITATION RULE: NEVER cite internal tool evidence, briefings, system state, TaskFlow tasks, or workspace data with [1] markers or include them in a '### Sources' section. '### Sources' is exclusively for external web URLs.
+STRICT UI LAYOUT RULE: For daily briefings, agendas, schedules, or dashboard summaries, NEVER use markdown tables (they wrap awkwardly and look broken on mobile/sidebars). Instead, use clean markdown headers (e.g. ### 🌤️ Weather & Time, ### 📋 Active Agenda, ### 🎯 Today's Focus) and bullet points. Never output raw HTML tags like <br>.
+Do not claim to have generated, edited, executed, searched or verified something unless the system actually supplied the result.
+Prefer structured answers with short paragraphs, bullets, and code blocks when useful.'''
 MODEL_FALLBACK=GROQ_MODEL
 SUPPORTED_MODELS={GROQ_MODEL}
 IMAGE_EXTENSIONS={'.png','.jpg','.jpeg','.webp'}
@@ -61,16 +80,52 @@ def weather_code_summary(code):
 async def get_weather_coords(lat,lon,label='Your location',country='',http=None):
     own=http is None; h=http or httpx.AsyncClient(timeout=12)
     try:
-        r=await h.get('https://api.open-meteo.com/v1/forecast',params={'latitude':lat,'longitude':lon,'current':'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m','timezone':'auto'});r.raise_for_status();d=r.json();c=d['current']
-        return {'ok':True,'city':label,'country':country,'timezone':d.get('timezone'),'latitude':lat,'longitude':lon,'temperature':c['temperature_2m'],'feels_like':c['apparent_temperature'],'humidity':c['relative_humidity_2m'],'wind':c['wind_speed_10m'],'summary':weather_code_summary(c['weather_code']),'time':c['time']}
+        try:
+            r=await h.get('https://api.open-meteo.com/v1/forecast',params={'latitude':lat,'longitude':lon,'current':'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m','timezone':'auto'})
+            r.raise_for_status()
+            d=r.json()
+            c=d.get('current') or {}
+            temp = c.get('temperature_2m')
+            feels = c.get('apparent_temperature', temp)
+            humidity = c.get('relative_humidity_2m', 60)
+            wind = c.get('wind_speed_10m', 0)
+            code = c.get('weather_code', 0)
+            time_recorded = c.get('time')
+        except Exception:
+            r=await h.get('https://api.open-meteo.com/v1/forecast',params={'latitude':lat,'longitude':lon,'current_weather':'true'})
+            r.raise_for_status()
+            d=r.json()
+            cw=d.get('current_weather') or {}
+            temp = cw.get('temperature')
+            feels = temp
+            humidity = 60
+            wind = cw.get('windspeed', 0)
+            code = cw.get('weathercode', 0)
+            time_recorded = cw.get('time')
+        return {'ok':True,'city':label,'country':country,'timezone':d.get('timezone'),'latitude':lat,'longitude':lon,'temperature':temp,'feels_like':feels,'humidity':humidity,'wind':wind,'summary':weather_code_summary(code),'time':time_recorded}
     finally:
         if own: await h.aclose()
 
 async def get_weather(city):
+    clean = city.strip().lower()
+    if clean in tools.US_STATES:
+        st = tools.US_STATES[clean]
+        return await get_weather_coords(st['lat'], st['lon'], st['city'], 'United States')
     async with httpx.AsyncClient(timeout=12) as h:
-        g=await h.get('https://geocoding-api.open-meteo.com/v1/search',params={'name':city,'count':1,'language':'en','format':'json'});g.raise_for_status();rs=g.json().get('results') or []
+        candidates = [re.sub(r'[,.\s]+(america|usa|us|united states|india|uk)\b', '', city, flags=re.I).strip(), city]
+        rs = []
+        for c in candidates:
+            if not c: continue
+            g=await h.get('https://geocoding-api.open-meteo.com/v1/search',params={'name':c,'count':5,'language':'en','format':'json'})
+            g.raise_for_status()
+            rs=g.json().get('results') or []
+            if rs: break
         if not rs: raise ValueError('Location not found')
-        loc=rs[0];return await get_weather_coords(loc['latitude'],loc['longitude'],loc.get('name',city),loc.get('country',''),h)
+        loc=rs[0]
+        if any(term in city.lower() for term in ("america", "usa", "us")):
+            us_matches = [r for r in rs if r.get("country") == "United States"]
+            if us_matches: loc = us_matches[0]
+        return await get_weather_coords(loc['latitude'],loc['longitude'],loc.get('name',city),loc.get('country',''),h)
 
 def build_context(live):
     c=[f"Current server time in India (IST): {now_ist()}"]
@@ -82,8 +137,11 @@ def build_context(live):
         if live.get('files'): c.append('Uploaded file text: '+str(live['files'])[:30000])
     return '\n'.join(c)
 
-def build_text_messages(message,history,mode,live):
-    sys=BASE_PROMPT+'\nMode: '+MODE_PROMPTS.get(mode,MODE_PROMPTS['General'])+'\n\nLIVE CONTEXT:\n'+build_context(live)
+def build_text_messages(message,history,mode,live,tool_evidence=''):
+    sys=BASE_PROMPT+'\nMode: '+MODE_PROMPTS.get(mode,MODE_PROMPTS['General'])
+    if tool_evidence:
+        sys+='\n\n=== VERIFIED GROUND TRUTH TOOL EVIDENCE (DO NOT CONTRADICT) ===\n'+tool_evidence
+    sys+='\n\nLIVE CONTEXT:\n'+build_context(live)
     msgs=[{'role':'system','content':sys}]
     for x in (history or [])[-12:]:
         if x.get('role') in ('user','assistant') and x.get('content'): msgs.append({'role':x['role'],'content':str(x['content'])[:12000]})
@@ -156,9 +214,43 @@ def gemini_interactions_input(message,mode,live):
         inp.append({'type':'image','data':x['b64'],'mime_type':x['mime']})
     return inp, len(visual_items)
 
-def groq_complete(messages,stream=False):
+def groq_complete(messages,stream=False,model=None,temperature=0.45):
     if not GROQ_API_KEY or groq_client is None: raise RuntimeError('GROQ_API_KEY is not configured. Add it to backend/.env and restart the server.')
-    return groq_client.chat.completions.create(model=GROQ_MODEL,messages=messages,temperature=0.45,max_completion_tokens=1800,reasoning_effort='low',stream=stream)
+    use_model = model or GROQ_MODEL
+    return groq_client.chat.completions.create(model=use_model,messages=messages,temperature=temperature,max_completion_tokens=2200,stream=stream)
+
+def gemini_text_complete(prompt_text):
+    """Fallback text completion via Gemini."""
+    if not gemini_client or not GEMINI_API_KEY:
+        raise RuntimeError('Gemini client not configured')
+    if hasattr(gemini_client, 'interactions'):
+        try:
+            inter = gemini_client.interactions.create(model=GEMINI_MODEL, input=prompt_text)
+            txt = getattr(inter, 'output_text', None) or ''
+            if txt.strip():
+                return txt.strip(), GEMINI_MODEL
+        except Exception as e:
+            app.logger.warning('Gemini interaction text fallback failed: %s', e)
+    for model in GEMINI_VISION_FALLBACKS:
+        try:
+            res = gemini_client.models.generate_content(model=model, contents=prompt_text)
+            txt = getattr(res, 'text', None) or ''
+            if txt.strip():
+                return txt.strip(), model
+        except Exception as e:
+            app.logger.warning('Gemini generate_content text model %s failed: %s', model, e)
+    raise RuntimeError('All Gemini text completion options failed')
+
+def gemini_text_stream(prompt_text):
+    """Fallback streaming via Gemini generate_content_stream."""
+    if not gemini_client or not GEMINI_API_KEY:
+        raise RuntimeError('Gemini client not configured')
+    for model in GEMINI_VISION_FALLBACKS:
+        try:
+            return gemini_client.models.generate_content_stream(model=model, contents=prompt_text), model
+        except Exception as e:
+            app.logger.warning('Gemini streaming model %s failed: %s', model, e)
+    raise RuntimeError('All Gemini streaming options failed')
 
 def _gemini_error_code(exc):
     return getattr(exc,'code',None) or getattr(exc,'status_code',None) or getattr(getattr(exc,'response',None),'status_code',None)
@@ -220,7 +312,15 @@ def root(): return jsonify({'app':'Vaani','version':APP_VERSION,'status':'ok','g
 def health(): return jsonify({'ok':True,'version':APP_VERSION,'groq_configured':bool(GROQ_API_KEY),'gemini_configured':bool(GEMINI_API_KEY),'vision_model':GEMINI_MODEL,'vision_models':GEMINI_VISION_FALLBACKS,'text_model':GROQ_MODEL,'time_ist':now_ist()})
 @app.get('/api/time')
 def api_time():
-    city=request.args.get('city','India');zones={'india':'Asia/Kolkata','delhi':'Asia/Kolkata','mumbai':'Asia/Kolkata','london':'Europe/London','new york':'America/New_York','tokyo':'Asia/Tokyo','dubai':'Asia/Dubai','singapore':'Asia/Singapore','sydney':'Australia/Sydney'};zone=zones.get(city.lower(),'Asia/Kolkata');d=datetime.now(ZoneInfo(zone));return jsonify({'ok':True,'city':city,'timezone':zone,'time':d.isoformat(),'formatted':d.strftime('%d %b %Y, %I:%M:%S %p')})
+    city = request.args.get('city') or request.args.get('location') or 'India'
+    t_data = tools.fetch_real_time(city)
+    if t_data.get('ok'):
+        t_data['formatted'] = f"{t_data['date']}, {t_data['time_12h']}"
+        t_data['time'] = t_data['iso']
+        t_data['city'] = t_data['location']
+        return jsonify(t_data)
+    d = datetime.now(ZoneInfo('Asia/Kolkata'))
+    return jsonify({'ok': True, 'city': city, 'timezone': 'Asia/Kolkata', 'time': d.isoformat(), 'formatted': d.strftime('%d %b %Y, %I:%M:%S %p')})
 @app.get('/api/weather')
 def api_weather():
     import asyncio
@@ -234,44 +334,73 @@ def api_weather():
     except Exception as e:return json_error(str(e),502,'weather_error')
 
 def search_web(query, limit=10):
-    """Fetch general web results with resilient DuckDuckGo HTML/lite fallbacks.
-    The parser deliberately supports both current result layouts so a UI empty state
-    is not caused merely by a selector/layout change on the provider side.
-    """
+    """Fetch general web results with resilient DuckDuckGo HTML POST endpoints."""
     from bs4 import BeautifulSoup
-    headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Vaani/6.4.1 Chrome/154 Safari/537.36','Accept-Language':'en-IN,en;q=0.9'}
-    endpoints=[
-        ('DuckDuckGo HTML','https://html.duckduckgo.com/html/'),
-        ('DuckDuckGo Lite','https://lite.duckduckgo.com/lite/'),
-    ]
-    errors=[]
-    with httpx.Client(timeout=15,headers=headers,follow_redirects=True) as h:
-        for source,url in endpoints:
+    import urllib.parse
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-IN,en;q=0.9'
+    }
+    items = []
+    seen = set()
+    errors = []
+    with httpx.Client(timeout=15, headers=headers, follow_redirects=True) as h:
+        for url, is_post in [('https://html.duckduckgo.com/html/', True), ('https://lite.duckduckgo.com/lite/', True), ('https://html.duckduckgo.com/html/', False)]:
             try:
-                r=h.get(url,params={'q':query,'kl':'in-en'}); r.raise_for_status()
-                soup=BeautifulSoup(r.text,'html.parser'); items=[]
-                # Standard HTML layout
-                for res in soup.select('.result, .results_links_deep'):
-                    a=res.select_one('.result__a, a.result-link, .result-link')
-                    sn=res.select_one('.result__snippet, .result-snippet')
-                    if not a: continue
-                    href=(a.get('href') or '').strip(); title=a.get_text(' ',strip=True); text=sn.get_text(' ',strip=True) if sn else ''
-                    if href and title and href.startswith(('http://','https://')) and not any(x['url']==href for x in items):
-                        items.append({'title':title,'text':text,'url':href})
-                # Lite layout fallback: result links/snippets are not wrapped in .result
-                if not items:
-                    links=soup.select('a.result-link, a.result__a')
-                    for a in links:
-                        href=(a.get('href') or '').strip(); title=a.get_text(' ',strip=True)
-                        parent=a.parent.parent if a.parent and a.parent.parent else a.parent
-                        sn=parent.select_one('.result-snippet, .result__snippet') if parent else None
-                        text=sn.get_text(' ',strip=True) if sn else ''
-                        if href and title and href.startswith(('http://','https://')) and not any(x['url']==href for x in items):
-                            items.append({'title':title,'text':text,'url':href})
-                if items: return items[:limit], source
-                errors.append(f'{source}: no parseable results')
+                if is_post:
+                    r = h.post(url, data={'q': query})
+                else:
+                    r = h.get(url, params={'q': query})
+                if r.status_code != 200:
+                    continue
+                soup = BeautifulSoup(r.text, 'html.parser')
+                for res in soup.select('.result, .results_links_deep, tr'):
+                    # Skip sponsored / ad results
+                    if res.select_one('.result--ad, .badge--ad'):
+                        continue
+                    a = res.select_one('.result__a, a.result-link, a')
+                    sn = res.select_one('.result__snippet, .result-snippet, td.result-snippet')
+                    if not a:
+                        continue
+                    href = (a.get('href') or '').strip()
+                    title = a.get_text(' ', strip=True)
+                    text = sn.get_text(' ', strip=True) if sn else ''
+                    
+                    if 'uddg=' in href:
+                        try:
+                            parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(href).query)
+                            if 'uddg' in parsed_qs:
+                                href = parsed_qs['uddg'][0]
+                        except Exception:
+                            pass
+
+                    if href.startswith(('http://', 'https://')) and not href.startswith('https://duckduckgo.com/y.js') and href not in seen and title:
+                        seen.add(href)
+                        items.append({'title': title, 'text': text, 'url': href})
+                    if len(items) >= limit:
+                        return items[:limit], 'DuckDuckGo'
+                if items:
+                    return items[:limit], 'DuckDuckGo'
             except Exception as e:
-                errors.append(f'{source}: {type(e).__name__}')
+                errors.append(f'{type(e).__name__}: {str(e)}')
+
+        # Fallback to DuckDuckGo Instant Answer API
+        try:
+            api_r = h.get('https://api.duckduckgo.com/', params={'q': query, 'format': 'json'})
+            if api_r.status_code == 200:
+                data = api_r.json()
+                if data.get('AbstractText') and data.get('AbstractURL'):
+                    items.append({'title': data.get('Heading', query), 'text': data.get('AbstractText'), 'url': data.get('AbstractURL')})
+                for topic in data.get('RelatedTopics', []):
+                    if isinstance(topic, dict) and topic.get('Text') and topic.get('FirstURL'):
+                        items.append({'title': topic.get('Text')[:60], 'text': topic.get('Text'), 'url': topic.get('FirstURL')})
+                if items:
+                    return items[:limit], 'DuckDuckGo API'
+        except Exception:
+            pass
+
+    if items:
+        return items[:limit], 'DuckDuckGo'
     raise RuntimeError('Web search provider returned no usable results. ' + '; '.join(errors))
 
 @app.get('/api/search')
@@ -309,22 +438,54 @@ def analyze_file():
         if ext in IMAGE_EXTENSIONS or mime.startswith('image/'):
             if ext not in IMAGE_EXTENSIONS or not validate_image_bytes(data,mime,ext):return json_error('Supported images are valid PNG, JPG/JPEG or WebP files.',400,'invalid_image')
             b64=base64.b64encode(data).decode('ascii');return jsonify({'ok':True,'name':name,'type':ext[1:],'mime':mime if mime.startswith('image/') else ('image/jpeg' if ext in {'.jpg','.jpeg'} else 'image/'+ext[1:]),'kind':'image','text':'Image uploaded. Ask Vaani to describe, inspect or reason about what is visible.','data_url':f"data:{mime if mime.startswith('image/') else 'image/jpeg'};base64,{b64}",'characters':0,'size':len(data),'sha256':sha256(data)})
-        if ext in TEXT_EXTENSIONS:text=data.decode('utf-8','ignore')
-        elif ext=='.pdf':
-            from pypdf import PdfReader
-            reader=PdfReader(io.BytesIO(data));pages=[]
-            for i,p in enumerate(reader.pages,1): pages.append(f'--- Page {i} ---\n{p.extract_text() or ""}')
-            text='\n'.join(pages)
-            if not text.strip(): text='[PDF contains no extractable text. It may be scanned/image-only; Gemini can inspect the PDF when the inline PDF payload is available.]'
-        elif ext in {'.xlsx','.xlsm','.xls'}:
+        if ext in {'.xlsx', '.xlsm', '.xls', '.csv', '.tsv'}:
             import pandas as pd
-            book=pd.ExcelFile(io.BytesIO(data));parts=[]
-            for sheet in book.sheet_names:
-                df=book.parse(sheet);parts.append(f'Sheet: {sheet}\nRows: {len(df)} | Columns: {len(df.columns)}\nColumns: {list(map(str,df.columns))}\nPreview:\n{df.head(40).to_csv(index=False)}')
-            text='\n\n'.join(parts)
-        elif ext=='.docx':text=extract_docx(data)
-        else:return json_error(f'Unsupported file type: {ext or mime}',400,'unsupported_file')
-        text=text[:MAX_TEXT];payload={'ok':True,'name':name,'type':ext[1:] if ext else mime,'mime':mime,'kind':'document','text':text,'characters':len(text),'size':len(data),'sha256':sha256(data),'note':'Gemini will use the native PDF when the file is small enough for inline transfer.' if ext=='.pdf' and len(data)<=MAX_INLINE_FILE_BYTES else ''}
+            frames = load_frames(data, ext)
+            profile = compute_profile(frames)
+            parts = [
+                f"=== DATASET PROFILE & STATISTICAL OVERVIEW ({name}) ===",
+                f"• Total Rows: {profile['total_rows']}",
+                f"• Sheets / Tables: {', '.join(frames.keys())}"
+            ]
+            for sname, sheet_data in profile['sheets'].items():
+                parts.append(f"\n[Sheet: {sname}]")
+                parts.append(f"• Dimensions: {sheet_data['rows']} rows × {sheet_data['columns']} columns")
+                parts.append(f"• Columns: {', '.join(sheet_data['column_names'])}")
+                if sheet_data['duplicates'] > 0:
+                    parts.append(f"• ⚠️ Duplicate Rows Detected: {sheet_data['duplicates']}")
+                missing = [f"{col}: {cnt} nulls" for col, cnt in sheet_data['missing'].items() if cnt > 0]
+                if missing:
+                    parts.append(f"• ⚠️ Missing / Null Values: {', '.join(missing[:8])}")
+                if sheet_data['numeric_summary']:
+                    parts.append("• Summary Statistics (Numerical Columns):")
+                    for col, stats in list(sheet_data['numeric_summary'].items())[:6]:
+                        parts.append(f"  - {col}: Mean={stats.get('mean')}, Min={stats.get('min')}, Max={stats.get('max')}")
+                df_curr = frames[sname]
+                parts.append(f"• Data Sample (Preview Rows):\n{df_curr.head(35).to_csv(index=False)}")
+            text = "\n".join(parts)
+        elif ext == '.pdf':
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            pages = []
+            for i, p in enumerate(reader.pages, 1):
+                p_text = p.extract_text() or ''
+                if p_text.strip():
+                    pages.append(f"--- Page {i} ---\n{p_text}")
+            text = "\n".join(pages)
+            if not text.strip():
+                text = '[PDF contains no extractable text. Scanned or image-only format.]'
+        elif ext == '.docx':
+            text = extract_docx(data)
+        elif ext in TEXT_EXTENSIONS:
+            text = data.decode('utf-8', 'ignore')
+        else:
+            return json_error(f'Unsupported file type: {ext or mime}', 400, 'unsupported_file')
+        text = text[:MAX_TEXT]
+        try:
+            brain_db.index_document(name, data, ext[1:] if ext else 'doc', text)
+        except Exception:
+            pass
+        payload={'ok':True,'name':name,'type':ext[1:] if ext else mime,'mime':mime,'kind':'document','text':text,'characters':len(text),'size':len(data),'sha256':sha256(data),'note':'Gemini will use the native PDF when the file is small enough for inline transfer.' if ext=='.pdf' and len(data)<=MAX_INLINE_FILE_BYTES else ''}
         if ext=='.pdf' and len(data)<=MAX_INLINE_FILE_BYTES: payload['data_url']='data:application/pdf;base64,'+base64.b64encode(data).decode('ascii')
         return jsonify(payload)
     except Exception as e:return json_error(str(e),422,'file_parse_error')
@@ -453,28 +614,116 @@ def generate_video():
         while not operation.done:
             time.sleep(8);operation=gemini_client.operations.get(operation)
         video=operation.response.generated_videos[0]
-        return jsonify({'ok':True,'video_file':getattr(getattr(video,'video',None),'uri',None),'kind':'video','model':GEMINI_VIDEO_MODEL,'note':'Video generation completed. Use the returned Gemini file URI with the Gemini Files API.'})
+        uri = getattr(getattr(video,'video',None),'uri',None)
+        return jsonify({
+            'ok':True,
+            'video_file': uri,
+            'video_url': uri,
+            'kind':'video',
+            'model':GEMINI_VIDEO_MODEL,
+            'note':'Video generation completed. Use the returned Gemini file URI with the Gemini Files API.'
+        })
     except Exception as e:
         app.logger.exception('video_generation_error')
         return json_error('Video creation is temporarily unavailable. Please try again in a moment.',503,'video_generation_error')
 
-def route_model(data):
-    return GROQ_MODEL
+def check_auto_memory(text):
+    """Detects explicit user preference/memory statements and stores them permanently."""
+    if not text: return
+    pats = [
+        r'^(?:remember\s+(?:that|this)?\s*[:,-]?\s*)(.+)',
+        r'^(?:my\s+name\s+is\s+)(.+)',
+        r'^(?:i\s+prefer\s+)(.+)',
+        r'^(?:i\s+live\s+in\s+)(.+)'
+    ]
+    for p in pats:
+        m = re.search(p, text.strip(), re.IGNORECASE)
+        if m:
+            fact = m.group(1).strip()
+            if len(fact) > 3:
+                try:
+                    brain_db.save_memory(fact, category="preference", source="user_explicit")
+                except Exception:
+                    pass
 
 @app.post('/api/chat')
 def chat():
     data=request.get_json(silent=True) or {};message=str(data.get('message','')).strip()
     if not message and not has_attachments(data.get('live_context') or {}):return json_error('Message or attachment is required')
     live=data.get('live_context') or {};history=data.get('history') or [];mode=data.get('mode','General')
+    selected_model=data.get('model','Saturn')
+    chat_id=str(data.get('chat_id') or int(time.time()))
+    
+    # 1. Execute deterministic tools (Weather, Math, Search, Document RAG, Memory)
+    tool_data = tools.route_and_execute_tools(message, live, history=history, mode=mode)
+    tool_evidence = tool_data.get("evidence_block", "")
+    
     try:
+        # Save user message to persistent DB
+        if message:
+            brain_db.save_chat_message(chat_id, 'user', message)
+            check_auto_memory(message)
+            
         if has_attachments(live):
             image_count=len(live.get('images') or [])
             attachment_count=len(live.get('attachments') or [])
             app.logger.info('Vision request: images=%s attachments=%s',image_count,attachment_count)
             text,vision_model=gemini_complete(message or 'Inspect the attached file/image and explain what is important.',history,mode,live)
+            brain_db.save_chat_message(chat_id, 'assistant', text)
             return jsonify({'ok':True,'text':text,'model_used':vision_model,'vision_routed':True,'vision_image_count':len(live.get('images') or []),'vision_attachment_count':len(live.get('attachments') or [])})
-        r=groq_complete(build_text_messages(message,history,mode,live),False)
-        return jsonify({'ok':True,'text':r.choices[0].message.content or '','provider':'groq','model_used':GROQ_MODEL,'vision_routed':False})
+        
+        # Multi-Tier Resilient Text Completion
+        text_messages = build_text_messages(message, history, mode, live, tool_evidence)
+        temp = 0.2 if mode == 'Coding Assistant' or selected_model == 'Uranus' else (0.3 if selected_model == 'Neptune' else 0.45)
+        
+        full_text = None
+        provider_used = 'groq'
+        model_used = GROQ_MODEL
+
+        # Tier 1: Groq Fast Models
+        if selected_model != 'Mars' and GROQ_API_KEY:
+            for g_model in GROQ_FALLBACK_MODELS:
+                try:
+                    r = groq_complete(text_messages, False, model=g_model, temperature=temp)
+                    ans = (r.choices[0].message.content or '').strip()
+                    if ans:
+                        full_text = ans
+                        model_used = g_model
+                        provider_used = 'groq'
+                        break
+                except Exception as ge:
+                    app.logger.warning('Groq model %s failed: %s; attempting fallback', g_model, ge)
+
+        # Tier 2: Gemini Direct Intelligence
+        if not full_text and gemini_client:
+            try:
+                g_prompt = BASE_PROMPT + '\nMode: ' + MODE_PROMPTS.get(mode, MODE_PROMPTS['General'])
+                if tool_evidence: g_prompt += '\n\n' + tool_evidence
+                g_prompt += '\n\nLIVE CONTEXT:\n' + build_context(live)
+                g_prompt += '\n\nUSER REQUEST: ' + message
+                ans, gem_model = gemini_text_complete(g_prompt)
+                if ans:
+                    full_text = ans
+                    model_used = gem_model
+                    provider_used = 'gemini'
+            except Exception as gme:
+                app.logger.warning('Gemini text fallback failed: %s', gme)
+
+        # Tier 3: Groq Emergency Fallback
+        if not full_text and GROQ_API_KEY:
+            try:
+                r = groq_complete(text_messages, False, model='qwen/qwen3.8-27b', temperature=temp)
+                full_text = (r.choices[0].message.content or '').strip()
+                provider_used = 'groq'
+                model_used = 'qwen/qwen3.8-27b'
+            except Exception:
+                pass
+
+        if not full_text:
+            raise RuntimeError('All intelligence providers are currently busy. Please retry in a moment.')
+            
+        brain_db.save_chat_message(chat_id, 'assistant', full_text)
+        return jsonify({'ok':True,'text':full_text,'provider':provider_used,'model_used':model_used,'vision_routed':False,'tools_used':tool_data.get('executed_tools',[])})
     except Exception as e:
         app.logger.exception('Chat request failed')
         msg=str(e)
@@ -484,22 +733,177 @@ def chat():
 @app.post('/api/chat/stream')
 def chat_stream():
     data=request.get_json(silent=True) or {};message=str(data.get('message','')).strip();live=data.get('live_context') or {};history=data.get('history') or [];mode=data.get('mode','General')
+    selected_model=data.get('model','Saturn')
+    chat_id=str(data.get('chat_id') or int(time.time()))
     if has_attachments(live):return jsonify({'ok':False,'error':'Multimodal requests use the non-streaming Gemini route.','code':'multimodal_use_chat'}),409
     if not message:return json_error('Message is required')
+    
+    # Save user message to persistent DB
+    brain_db.save_chat_message(chat_id, 'user', message)
+    check_auto_memory(message)
+    
+    # Run deterministic intent tools
+    tool_data = tools.route_and_execute_tools(message, live, history=history, mode=mode)
+    tool_evidence = tool_data.get("evidence_block", "")
+    
     def generate():
-        try:
-            stream=groq_complete(build_text_messages(message,history,mode,live),True)
-            for chunk in stream:
-                delta=chunk.choices[0].delta.content if chunk.choices else None
-                if delta:yield 'data: '+json.dumps({'text':delta})+'\n\n'
-            yield 'data: '+json.dumps({'meta':{'model_used':GROQ_MODEL,'provider':'groq','vision_routed':False}})+'\n\n';yield 'data: [DONE]\n\n'
-        except Exception as e:
-            yield 'data: '+json.dumps({'error':str(e),'code':'chat_stream_error'})+'\n\n';yield 'data: [DONE]\n\n'
+        collected = []
+        streamed_any = False
+        provider_used = 'groq'
+        model_used = GROQ_MODEL
+        temp = 0.2 if mode == 'Coding Assistant' or selected_model == 'Uranus' else (0.3 if selected_model == 'Neptune' else 0.45)
+        text_messages = build_text_messages(message,history,mode,live,tool_evidence)
+
+        # Tier 1: Try Primary Groq Streaming
+        if selected_model != 'Mars' and GROQ_API_KEY:
+            for g_model in GROQ_FALLBACK_MODELS:
+                try:
+                    stream = groq_complete(text_messages, True, model=g_model, temperature=temp)
+                    for chunk in stream:
+                        delta = chunk.choices[0].delta.content if chunk.choices else None
+                        if delta:
+                            collected.append(delta)
+                            streamed_any = True
+                            yield 'data: '+json.dumps({'text':delta})+'\n\n'
+                    if streamed_any:
+                        model_used = g_model
+                        provider_used = 'groq'
+                        break
+                except Exception as ge:
+                    app.logger.warning('Groq stream model %s failed: %s', g_model, ge)
+                    if streamed_any:
+                        break
+
+        # Tier 2: Try Gemini Streaming if Groq has not yielded text
+        if not streamed_any and gemini_client:
+            try:
+                g_prompt = BASE_PROMPT + '\nMode: ' + MODE_PROMPTS.get(mode, MODE_PROMPTS['General'])
+                if tool_evidence: g_prompt += '\n\n' + tool_evidence
+                g_prompt += '\n\nLIVE CONTEXT:\n' + build_context(live)
+                g_prompt += '\n\nUSER REQUEST: ' + message
+                gem_stream, gem_model = gemini_text_stream(g_prompt)
+                for chunk in gem_stream:
+                    delta = getattr(chunk, 'text', '') or ''
+                    if delta:
+                        collected.append(delta)
+                        streamed_any = True
+                        yield 'data: '+json.dumps({'text':delta})+'\n\n'
+                if streamed_any:
+                    model_used = gem_model
+                    provider_used = 'gemini'
+            except Exception as gme:
+                app.logger.warning('Gemini streaming fallback failed: %s', gme)
+
+        # Tier 3: Non-streaming fallback if neither streamed
+        if not streamed_any:
+            try:
+                g_prompt = BASE_PROMPT + '\nMode: ' + MODE_PROMPTS.get(mode, MODE_PROMPTS['General'])
+                if tool_evidence: g_prompt += '\n\n' + tool_evidence
+                g_prompt += '\n\nUSER REQUEST: ' + message
+                ans, gem_model = gemini_text_complete(g_prompt)
+                if ans:
+                    collected.append(ans)
+                    streamed_any = True
+                    yield 'data: '+json.dumps({'text':ans})+'\n\n'
+                    model_used = gem_model
+                    provider_used = 'gemini'
+            except Exception:
+                pass
+
+        full_reply = "".join(collected)
+        if full_reply:
+            brain_db.save_chat_message(chat_id, 'assistant', full_reply)
+            
+        yield 'data: '+json.dumps({'meta':{'model_used':model_used,'provider':provider_used,'vision_routed':False,'tools_used':tool_data.get('executed_tools',[])}})+'\n\n'
+        yield 'data: [DONE]\n\n'
+
     return Response(stream_with_context(generate()),mimetype='text/event-stream',headers={'Cache-Control':'no-cache, no-transform','X-Accel-Buffering':'no','Connection':'keep-alive'})
+
+# ----------------- Brain DB API Routes -----------------
+
+@app.route('/api/brain/memory', methods=['GET', 'POST', 'DELETE'])
+def api_brain_memory():
+    if request.method == 'GET':
+        q = request.args.get('q', '').strip()
+        mems = brain_db.search_memories(q) if q else brain_db.list_memories()
+        return jsonify({'ok': True, 'memories': mems})
+    elif request.method == 'POST':
+        d = request.get_json(silent=True) or {}
+        content = str(d.get('content', '')).strip()
+        if not content: return json_error('Memory content is required')
+        cat = d.get('category', 'general')
+        m = brain_db.save_memory(content, cat, source="user_explicit")
+        return jsonify({'ok': True, 'id': m.get('id'), 'memory': m})
+    elif request.method == 'DELETE':
+        mid = request.args.get('id') or (request.get_json(silent=True) or {}).get('id')
+        if not mid: return json_error('Memory ID required')
+        deleted = brain_db.delete_memory(int(mid))
+        return jsonify({'ok': deleted})
+
+@app.route('/api/brain/history', methods=['GET'])
+def api_brain_history():
+    q = request.args.get('q', '').strip()
+    if q:
+        results = brain_db.search_history(q)
+        return jsonify({'ok': True, 'results': results})
+    convs = brain_db.list_conversations()
+    return jsonify({'ok': True, 'conversations': convs})
+
+@app.route('/api/brain/history/<cid>', methods=['GET'])
+def api_brain_history_detail(cid):
+    msgs = brain_db.get_conversation_messages(cid)
+    return jsonify({'ok': True, 'conversation_id': cid, 'messages': msgs})
+
+@app.route('/api/brain/library', methods=['GET', 'POST', 'DELETE'])
+def api_brain_library():
+    if request.method == 'GET':
+        docs = brain_db.list_library_documents()
+        return jsonify({'ok': True, 'documents': docs})
+    elif request.method == 'POST':
+        f = request.files.get('file')
+        if not f: return json_error('No file provided')
+        data = f.read()
+        name = Path(f.filename or 'document').name
+        ext = Path(name).suffix.lower()
+        if ext in TEXT_EXTENSIONS: text = data.decode('utf-8', 'ignore')
+        elif ext == '.pdf':
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            text = '\n'.join([p.extract_text() or '' for p in reader.pages])
+        elif ext == '.docx': text = extract_docx(data)
+        elif ext in {'.xlsx', '.xlsm', '.xls'}:
+            import pandas as pd
+            book = pd.ExcelFile(io.BytesIO(data))
+            text = '\n\n'.join([f"Sheet: {s}\n{book.parse(s).head(50).to_csv()}" for s in book.sheet_names])
+        else: text = data.decode('utf-8', 'ignore')
+        doc = brain_db.index_document(name, data, ext[1:] if ext else 'txt', text)
+        return jsonify({'ok': True, 'document': doc})
+    elif request.method == 'DELETE':
+        doc_id = request.args.get('id') or (request.get_json(silent=True) or {}).get('id')
+        if not doc_id: return json_error('Document ID required')
+        deleted = brain_db.delete_library_document(doc_id)
+        return jsonify({'ok': deleted})
+
+@app.route('/api/brain/library/search', methods=['GET'])
+def api_brain_library_search():
+    q = request.args.get('q', '').strip()
+    if not q: return json_error('Query required')
+    results = brain_db.search_library(q)
+    return jsonify({'ok': True, 'query': q, 'results': results})
 
 @app.get('/api/models')
 def models():
-    return jsonify({'ok':True,'selected_supported':[GROQ_MODEL],'models':[{'id':GROQ_MODEL,'modalities':['text']}],'vision':{'available':bool(gemini_client),'modalities':['text','image','video','audio','pdf'],'fallback_count':len(GEMINI_VISION_FALLBACKS)}})
+    return jsonify({
+        'ok':True,
+        'selected_supported':[GROQ_MODEL, GEMINI_MODEL],
+        'models':[
+            {'id':'Saturn', 'name':'Saturn', 'provider':'groq', 'tag':'GPT-OSS 20B Fast Assistant', 'modalities':['text']},
+            {'id':'Uranus', 'name':'Uranus', 'provider':'groq', 'tag':'Code & Architecture Specialist', 'modalities':['text', 'code']},
+            {'id':'Neptune', 'name':'Neptune', 'provider':'groq', 'tag':'Deep Analysis & Reasoning', 'modalities':['text', 'research']},
+            {'id':'Mars', 'name':'Mars', 'provider':'gemini', 'tag':'Multimodal & Vision Intelligence', 'modalities':['text', 'image', 'video']}
+        ],
+        'vision':{'available':bool(gemini_client),'model':GEMINI_MODEL,'fallback_count':len(GEMINI_VISION_FALLBACKS)}
+    })
 
 @app.errorhandler(413)
 def too_large(_):return json_error('Request/file exceeds the 20 MB limit.',413,'file_too_large')
@@ -508,3 +912,4 @@ def internal(_):return json_error('Unexpected backend error.',500,'internal_erro
 
 if __name__=='__main__':
     print('Vaani backend '+APP_VERSION+':',BASE_DIR);print('Groq configured:',bool(GROQ_API_KEY),'Gemini configured:',bool(GEMINI_API_KEY));app.run(host='127.0.0.1',port=int(os.getenv('PORT','5288')),debug=True)
+
