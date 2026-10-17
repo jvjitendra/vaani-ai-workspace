@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 
 BASE_DIR = Path(__file__).resolve().parent
 # Store persistent database outside the actively-watched Live Server tree
-DEFAULT_DATA_DIR = Path.home() / ".vaani_data"
+is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME") or os.environ.get("LAMBDA_TASK_ROOT"))
+DEFAULT_DATA_DIR = Path("/tmp/.vaani_data") if is_serverless else Path.home() / ".vaani_data"
 DATA_DIR = Path(os.environ.get("VAANI_DATA_DIR", str(DEFAULT_DATA_DIR)))
 LIBRARY_DIR = DATA_DIR / "library"
 DB_PATH = DATA_DIR / "vaani_brain.db"
@@ -23,8 +24,11 @@ def now_ist():
     return datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
 
 def get_db():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     
     # Preserve and migrate any existing database
     legacy_db = BASE_DIR / "data" / "vaani_brain.db"
@@ -35,7 +39,10 @@ def get_db():
         except Exception:
             pass
 
-    conn = sqlite3.connect(str(DB_PATH), timeout=20.0)
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=20.0)
+    except Exception:
+        conn = sqlite3.connect(":memory:", timeout=20.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -343,12 +350,14 @@ def chunk_text(text: str, chunk_size: int = 900, overlap: int = 150) -> list:
 def index_document(filename: str, file_bytes: bytes, file_type: str, extracted_text: str, custom_chunks: list = None) -> dict:
     """Saves document to disk, chunks content, and builds searchable FTS index."""
     doc_id = hashlib.sha256(file_bytes).hexdigest()[:16]
-    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-    stored_path = LIBRARY_DIR / f"{doc_id}_{filename}"
-    
-    # Save original copy
-    with open(stored_path, "wb") as f:
-        f.write(file_bytes)
+    stored_path = ""
+    try:
+        LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        stored_path = LIBRARY_DIR / f"{doc_id}_{filename}"
+        with open(stored_path, "wb") as f:
+            f.write(file_bytes)
+    except Exception:
+        pass
         
     chunks = custom_chunks or chunk_text(extracted_text)
     ts = now_ist()
