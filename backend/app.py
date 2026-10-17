@@ -20,8 +20,15 @@ import tools
 
 APP_VERSION='v1'
 load_dotenv(BASE_DIR/'.env')
-GROQ_API_KEY=os.getenv('GROQ_API_KEY','').strip()
-GEMINI_API_KEY=os.getenv('GEMINI_API_KEY','').strip()
+# Multi-key & backup key pool support for high availability and zero rate-limit downtime
+raw_groq = os.getenv('GROQ_API_KEY', '') + ',' + os.getenv('GROQ_BACKUP_API_KEY', '')
+GROQ_KEYS = [k.strip() for k in raw_groq.split(',') if k.strip()]
+GROQ_API_KEY = GROQ_KEYS[0] if GROQ_KEYS else ''
+
+raw_gemini = os.getenv('GEMINI_API_KEY', '') + ',' + os.getenv('GEMINI_BACKUP_API_KEY', '')
+GEMINI_KEYS = [k.strip() for k in raw_gemini.split(',') if k.strip()]
+GEMINI_API_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else ''
+
 GROQ_BASE='https://api.groq.com/openai/v1'
 GROQ_MODEL=os.getenv('GROQ_MODEL','qwen/qwen3.8-27b')
 GROQ_FALLBACK_MODELS=['qwen/qwen3.8-27b','openai/gpt-oss-120b','openai/gpt-oss-20b']
@@ -37,13 +44,17 @@ app.config['MAX_CONTENT_LENGTH']=20*1024*1024
 allowed=[x.strip() for x in FRONTEND_ORIGIN.split(',') if x.strip()]
 allowed += ['http://127.0.0.1:5500','http://localhost:5500','http://127.0.0.1:5288','http://localhost:5288','http://127.0.0.1:5050','http://localhost:5050','http://127.0.0.1:8080','http://localhost:8080']
 CORS(app, origins=allowed or '*')
-groq_client=OpenAI(api_key=GROQ_API_KEY,base_url=GROQ_BASE,timeout=90.0) if GROQ_API_KEY else None
+
+groq_clients = [OpenAI(api_key=k, base_url=GROQ_BASE, timeout=90.0) for k in GROQ_KEYS]
+groq_client = groq_clients[0] if groq_clients else None
+
 try:
     from google import genai
     from google.genai import types as genai_types
-    gemini_client=genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+    gemini_clients = [genai.Client(api_key=k) for k in GEMINI_KEYS]
+    gemini_client = gemini_clients[0] if gemini_clients else None
 except Exception:
-    genai=None;genai_types=None;gemini_client=None
+    genai=None;genai_types=None;gemini_clients=[];gemini_client=None
 
 MODE_PROMPTS={
  'General':'Answer naturally and helpfully. Handle general knowledge, practical questions, explanations and everyday tasks.',
@@ -215,88 +226,103 @@ def gemini_interactions_input(message,mode,live):
     return inp, len(visual_items)
 
 def groq_complete(messages,stream=False,model=None,temperature=0.45):
-    if not GROQ_API_KEY or groq_client is None: raise RuntimeError('GROQ_API_KEY is not configured. Add it to backend/.env and restart the server.')
+    if not groq_clients: raise RuntimeError('GROQ_API_KEY is not configured. Add it to backend/.env and restart the server.')
     use_model = model or GROQ_MODEL
-    return groq_client.chat.completions.create(model=use_model,messages=messages,temperature=temperature,max_completion_tokens=2200,stream=stream)
+    last_err = None
+    for client in groq_clients:
+        try:
+            return client.chat.completions.create(model=use_model,messages=messages,temperature=temperature,max_completion_tokens=2200,stream=stream)
+        except Exception as e:
+            last_err = e
+            app.logger.warning('Groq key failed (%s); trying next key in pool if available', e)
+    raise last_err or RuntimeError('All Groq keys failed')
 
 def gemini_text_complete(prompt_text):
-    """Fallback text completion via Gemini."""
-    if not gemini_client or not GEMINI_API_KEY:
+    """Fallback text completion via Gemini across all configured Gemini keys."""
+    if not gemini_clients:
         raise RuntimeError('Gemini client not configured')
-    if hasattr(gemini_client, 'interactions'):
-        try:
-            inter = gemini_client.interactions.create(model=GEMINI_MODEL, input=prompt_text)
-            txt = getattr(inter, 'output_text', None) or ''
-            if txt.strip():
-                return txt.strip(), GEMINI_MODEL
-        except Exception as e:
-            app.logger.warning('Gemini interaction text fallback failed: %s', e)
-    for model in GEMINI_VISION_FALLBACKS:
-        try:
-            res = gemini_client.models.generate_content(model=model, contents=prompt_text)
-            txt = getattr(res, 'text', None) or ''
-            if txt.strip():
-                return txt.strip(), model
-        except Exception as e:
-            app.logger.warning('Gemini generate_content text model %s failed: %s', model, e)
-    raise RuntimeError('All Gemini text completion options failed')
+    last_err = None
+    for g_client in gemini_clients:
+        if hasattr(g_client, 'interactions'):
+            try:
+                inter = g_client.interactions.create(model=GEMINI_MODEL, input=prompt_text)
+                txt = getattr(inter, 'output_text', None) or ''
+                if txt.strip():
+                    return txt.strip(), GEMINI_MODEL
+            except Exception as e:
+                last_err = e
+                app.logger.warning('Gemini interaction text fallback failed: %s', e)
+        for model in GEMINI_VISION_FALLBACKS:
+            try:
+                res = g_client.models.generate_content(model=model, contents=prompt_text)
+                txt = getattr(res, 'text', None) or ''
+                if txt.strip():
+                    return txt.strip(), model
+            except Exception as e:
+                last_err = e
+                app.logger.warning('Gemini generate_content text model %s failed: %s', model, e)
+    raise last_err or RuntimeError('All Gemini text completion options failed')
 
 def gemini_text_stream(prompt_text):
-    """Fallback streaming via Gemini generate_content_stream."""
-    if not gemini_client or not GEMINI_API_KEY:
+    """Fallback streaming via Gemini generate_content_stream across all configured Gemini keys."""
+    if not gemini_clients:
         raise RuntimeError('Gemini client not configured')
-    for model in GEMINI_VISION_FALLBACKS:
-        try:
-            return gemini_client.models.generate_content_stream(model=model, contents=prompt_text), model
-        except Exception as e:
-            app.logger.warning('Gemini streaming model %s failed: %s', model, e)
-    raise RuntimeError('All Gemini streaming options failed')
+    last_err = None
+    for g_client in gemini_clients:
+        for model in GEMINI_VISION_FALLBACKS:
+            try:
+                return g_client.models.generate_content_stream(model=model, contents=prompt_text), model
+            except Exception as e:
+                last_err = e
+                app.logger.warning('Gemini streaming model %s failed: %s', model, e)
+    raise last_err or RuntimeError('All Gemini streaming options failed')
 
 def _gemini_error_code(exc):
     return getattr(exc,'code',None) or getattr(exc,'status_code',None) or getattr(getattr(exc,'response',None),'status_code',None)
 
 def gemini_complete(message,history,mode,live):
-    if not gemini_client:
+    if not gemini_clients:
         raise RuntimeError('Vision is temporarily unavailable.')
     retryable={429,500,502,503,504}
     failures=[]
     has_visual=has_attachments(live)
 
-    # For image requests use the current Gemini Interactions multimodal format first.
-    # It sends the actual base64 image bytes as an image input, independently of chat history.
-    if has_visual and hasattr(gemini_client,'interactions'):
-        try:
-            inp,count=gemini_interactions_input(message or 'Inspect the attached image and explain what is visible.',mode,live)
-            for model in GEMINI_VISION_FALLBACKS:
-                try:
-                    interaction=gemini_client.interactions.create(model=model,input=inp)
-                    text=getattr(interaction,'output_text',None) or ''
-                    if text.strip():
-                        return text.strip(),model
-                    failures.append(f'{model}:empty_interaction_response')
-                except Exception as e:
-                    code=_gemini_error_code(e);failures.append(f'{model}:interaction:{code or type(e).__name__}')
-                    app.logger.warning('Vision interaction model %s failed (%s); trying next model',model,code or type(e).__name__)
-                    if code not in retryable:
-                        break
-                    time.sleep(0.35)
-        except Exception as e:
-            failures.append(f'interactions:{type(e).__name__}')
-            app.logger.warning('Gemini interaction vision path unavailable: %s; using generateContent fallback',type(e).__name__)
+    for g_client in gemini_clients:
+        # For image requests use the current Gemini Interactions multimodal format first.
+        # It sends the actual base64 image bytes as an image input, independently of chat history.
+        if has_visual and hasattr(g_client,'interactions'):
+            try:
+                inp,count=gemini_interactions_input(message or 'Inspect the attached image and explain what is visible.',mode,live)
+                for model in GEMINI_VISION_FALLBACKS:
+                    try:
+                        interaction=g_client.interactions.create(model=model,input=inp)
+                        text=getattr(interaction,'output_text',None) or ''
+                        if text.strip():
+                            return text.strip(),model
+                        failures.append(f'{model}:empty_interaction_response')
+                    except Exception as e:
+                        code=_gemini_error_code(e);failures.append(f'{model}:interaction:{code or type(e).__name__}')
+                        app.logger.warning('Vision interaction model %s failed (%s); trying next model',model,code or type(e).__name__)
+                        if code not in retryable:
+                            break
+                        time.sleep(0.35)
+            except Exception as e:
+                failures.append(f'interactions:{type(e).__name__}')
+                app.logger.warning('Gemini interaction vision path unavailable: %s; using generateContent fallback',type(e).__name__)
 
-    config=genai_types.GenerateContentConfig(max_output_tokens=2400,thinking_config=genai_types.ThinkingConfig(thinking_level='low'))
-    contents=gemini_contents(message,history,mode,live)
-    for model in GEMINI_VISION_FALLBACKS:
-        try:
-            response=gemini_client.models.generate_content(model=model,contents=contents,config=config)
-            text=getattr(response,'text',None) or ''
-            if text.strip(): return text.strip(),model
-            failures.append(f'{model}:empty_response')
-        except Exception as e:
-            code=_gemini_error_code(e);failures.append(f'{model}:{code or type(e).__name__}')
-            app.logger.warning('Vision model %s failed (%s); trying fallback if available',model,code or type(e).__name__)
-            if code not in retryable: break
-            time.sleep(0.35)
+        config=genai_types.GenerateContentConfig(max_output_tokens=2400,thinking_config=genai_types.ThinkingConfig(thinking_level='low'))
+        contents=gemini_contents(message,history,mode,live)
+        for model in GEMINI_VISION_FALLBACKS:
+            try:
+                response=g_client.models.generate_content(model=model,contents=contents,config=config)
+                text=getattr(response,'text',None) or ''
+                if text.strip(): return text.strip(),model
+                failures.append(f'{model}:empty_response')
+            except Exception as e:
+                code=_gemini_error_code(e);failures.append(f'{model}:{code or type(e).__name__}')
+                app.logger.warning('Vision model %s failed (%s); trying fallback if available',model,code or type(e).__name__)
+                if code not in retryable: break
+                time.sleep(0.35)
     app.logger.error('All vision paths failed: %s','; '.join(failures))
     raise RuntimeError('Image analysis is temporarily unavailable. Please try again in a moment.')
 
@@ -307,9 +333,9 @@ def extract_city(text):
     return None
 
 @app.get('/')
-def root(): return jsonify({'app':'Vaani','version':APP_VERSION,'status':'ok','groq_configured':bool(GROQ_API_KEY),'gemini_configured':bool(GEMINI_API_KEY)})
+def root(): return jsonify({'app':'Vaani','version':APP_VERSION,'status':'ok','groq_configured':bool(GROQ_KEYS),'groq_keys_count':len(GROQ_KEYS),'gemini_configured':bool(GEMINI_KEYS),'gemini_keys_count':len(GEMINI_KEYS)})
 @app.get('/api/health')
-def health(): return jsonify({'ok':True,'version':APP_VERSION,'groq_configured':bool(GROQ_API_KEY),'gemini_configured':bool(GEMINI_API_KEY),'vision_model':GEMINI_MODEL,'vision_models':GEMINI_VISION_FALLBACKS,'text_model':GROQ_MODEL,'time_ist':now_ist()})
+def health(): return jsonify({'ok':True,'version':APP_VERSION,'groq_configured':bool(GROQ_KEYS),'groq_keys_count':len(GROQ_KEYS),'gemini_configured':bool(GEMINI_KEYS),'gemini_keys_count':len(GEMINI_KEYS),'vision_model':GEMINI_MODEL,'vision_models':GEMINI_VISION_FALLBACKS,'text_model':GROQ_MODEL,'time_ist':now_ist()})
 @app.get('/api/time')
 def api_time():
     city = request.args.get('city') or request.args.get('location') or 'India'
@@ -568,7 +594,7 @@ def api_research():
 
 @app.post('/api/generate/image')
 def generate_image():
-    if not gemini_client:return json_error('GEMINI_API_KEY is not configured',503,'missing_gemini_key')
+    if not gemini_clients:return json_error('GEMINI_API_KEY is not configured',503,'missing_gemini_key')
     data=request.get_json(silent=True) or {};prompt=str(data.get('prompt','')).strip();images=data.get('images') or []
     if not prompt:return json_error('Missing image prompt')
     try:
@@ -576,11 +602,15 @@ def generate_image():
         for item in images[:3]:
             if item.get('data_url'):
                 raw,mime=data_url_bytes(item['data_url']);contents.append(genai_types.Part.from_bytes(data=raw,mime_type=mime))
-        response=gemini_client.models.generate_content(model=GEMINI_IMAGE_MODEL,contents=contents,config=genai_types.GenerateContentConfig(response_modalities=['IMAGE','TEXT']))
-        for part in response.parts or []:
-            inline=getattr(part,'inline_data',None)
-            if inline and getattr(inline,'data',None):
-                mime=getattr(inline,'mime_type',None) or 'image/png';return jsonify({'ok':True,'data_url':f'data:{mime};base64,{base64.b64encode(inline.data).decode("ascii")}','kind':'image','model':GEMINI_IMAGE_MODEL})
+        for g_client in gemini_clients:
+            try:
+                response=g_client.models.generate_content(model=GEMINI_IMAGE_MODEL,contents=contents,config=genai_types.GenerateContentConfig(response_modalities=['IMAGE','TEXT']))
+                for part in response.parts or []:
+                    inline=getattr(part,'inline_data',None)
+                    if inline and getattr(inline,'data',None):
+                        mime=getattr(inline,'mime_type',None) or 'image/png';return jsonify({'ok':True,'data_url':f'data:{mime};base64,{base64.b64encode(inline.data).decode("ascii")}','kind':'image','model':GEMINI_IMAGE_MODEL})
+            except Exception as ge:
+                app.logger.warning('Gemini image key failed (%s); trying next key if available', ge)
         return json_error('Gemini image model returned no image.',502,'empty_image_result')
     except Exception as e:
         app.logger.exception('image_generation_error')
@@ -588,16 +618,22 @@ def generate_image():
 
 @app.post('/api/generate/edit')
 def generate_edit():
-    if not gemini_client:return json_error('GEMINI_API_KEY is not configured',503,'missing_gemini_key')
+    if not gemini_clients:return json_error('GEMINI_API_KEY is not configured',503,'missing_gemini_key')
     data=request.get_json(silent=True) or {};prompt=str(data.get('prompt','')).strip();images=data.get('images') or []
     if not prompt:return json_error('Missing edit prompt')
     if not images or not images[0].get('data_url'):return json_error('Upload an image before editing')
     try:
-        raw,mime=data_url_bytes(images[0]['data_url']);response=gemini_client.models.generate_content(model=GEMINI_IMAGE_MODEL,contents=[prompt,genai_types.Part.from_bytes(data=raw,mime_type=mime)],config=genai_types.GenerateContentConfig(response_modalities=['IMAGE','TEXT']))
-        for part in response.parts or []:
-            inline=getattr(part,'inline_data',None)
-            if inline and getattr(inline,'data',None):
-                outmime=getattr(inline,'mime_type',None) or 'image/png';return jsonify({'ok':True,'data_url':f'data:{outmime};base64,{base64.b64encode(inline.data).decode("ascii")}','kind':'image','model':GEMINI_IMAGE_MODEL})
+        raw,mime=data_url_bytes(images[0]['data_url'])
+        contents=[prompt,genai_types.Part.from_bytes(data=raw,mime_type=mime)]
+        for g_client in gemini_clients:
+            try:
+                response=g_client.models.generate_content(model=GEMINI_IMAGE_MODEL,contents=contents,config=genai_types.GenerateContentConfig(response_modalities=['IMAGE','TEXT']))
+                for part in response.parts or []:
+                    inline=getattr(part,'inline_data',None)
+                    if inline and getattr(inline,'data',None):
+                        outmime=getattr(inline,'mime_type',None) or 'image/png';return jsonify({'ok':True,'data_url':f'data:{outmime};base64,{base64.b64encode(inline.data).decode("ascii")}','kind':'image','model':GEMINI_IMAGE_MODEL})
+            except Exception as ge:
+                app.logger.warning('Gemini edit key failed (%s); trying next key if available', ge)
         return json_error('Gemini image model returned no edited image.',502,'empty_edit_result')
     except Exception as e:
         app.logger.exception('image_edit_error')
@@ -605,24 +641,29 @@ def generate_edit():
 
 @app.post('/api/generate/video')
 def generate_video():
-    if not gemini_client:return json_error('GEMINI_API_KEY is not configured',503,'missing_gemini_key')
+    if not gemini_clients:return json_error('GEMINI_API_KEY is not configured',503,'missing_gemini_key')
     data=request.get_json(silent=True) or {};prompt=str(data.get('prompt','')).strip()
     if not prompt:return json_error('Missing video prompt')
     try:
-        operation=gemini_client.models.generate_videos(model=GEMINI_VIDEO_MODEL,prompt=prompt)
         import time
-        while not operation.done:
-            time.sleep(8);operation=gemini_client.operations.get(operation)
-        video=operation.response.generated_videos[0]
-        uri = getattr(getattr(video,'video',None),'uri',None)
-        return jsonify({
-            'ok':True,
-            'video_file': uri,
-            'video_url': uri,
-            'kind':'video',
-            'model':GEMINI_VIDEO_MODEL,
-            'note':'Video generation completed. Use the returned Gemini file URI with the Gemini Files API.'
-        })
+        for g_client in gemini_clients:
+            try:
+                operation=g_client.models.generate_videos(model=GEMINI_VIDEO_MODEL,prompt=prompt)
+                while not operation.done:
+                    time.sleep(8);operation=g_client.operations.get(operation)
+                video=operation.response.generated_videos[0]
+                uri = getattr(getattr(video,'video',None),'uri',None)
+                return jsonify({
+                    'ok':True,
+                    'video_file': uri,
+                    'video_url': uri,
+                    'kind':'video',
+                    'model':GEMINI_VIDEO_MODEL,
+                    'note':'Video generation completed. Use the returned Gemini file URI with the Gemini Files API.'
+                })
+            except Exception as ge:
+                app.logger.warning('Gemini video key failed (%s); trying next key if available', ge)
+        return json_error('Video creation is temporarily unavailable. Please try again in a moment.',503,'video_generation_error')
     except Exception as e:
         app.logger.exception('video_generation_error')
         return json_error('Video creation is temporarily unavailable. Please try again in a moment.',503,'video_generation_error')
